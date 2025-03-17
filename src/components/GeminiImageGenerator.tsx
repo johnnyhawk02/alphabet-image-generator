@@ -7,15 +7,16 @@ const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 function GeminiImageGenerator() {
   const [style, setStyle] = useState('');
-  const [word, setWord] = useState('');
-  const [image, setImage] = useState<any | null>(null);
+  const [words, setWords] = useState('');
+  const [images, setImages] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<string[]>([]);
 
-  const generateImage = async () => {
-    if (!word || !style) {
-      setError('Please enter both a word and style');
+  const generateImages = async () => {
+    const wordList = words.split(',').map(word => word.trim()).filter(word => word);
+    if (wordList.length === 0 || !style) {
+      setError('Please enter both words and style');
       return;
     }
     
@@ -27,6 +28,9 @@ function GeminiImageGenerator() {
     setLoading(true);
     setError(null);
     setDebugInfo([]);
+    setImages([]);
+    
+    const logs: string[] = [];
     
     try {
       const genAI = new GoogleGenerativeAI(API_KEY);
@@ -36,53 +40,55 @@ function GeminiImageGenerator() {
         model: "gemini-2.0-flash-exp" 
       });
       
-      // Create a detailed prompt combining the word and style
-      const imagePrompt = `Create a high-quality, clear image of a "${word}" in the style of ${style}. The object should be the central focus of the image, and visually styled according to the description: ${style}. Make it visually appealing and artistic.`;
-      
-      const logs = [`Sending prompt: ${imagePrompt}`];
-      setDebugInfo(logs);
-      
-      // Generate the image content
-      const result = await model.generateContent({
-        contents: [{
-          role: 'user',
-          parts: [{ text: imagePrompt }]
-        }],
-        generationConfig: {
-          responseModalities: ['Text', 'Image']
-        }
-      });
-      
-      logs.push('Received response from Gemini API');
-      setDebugInfo([...logs]);
-      
-      const response = await result.response;
-      logs.push('Processing response');
-      
-      // Check for safety blocks
-      if (response.candidates?.[0]?.safetyAttributes?.blockedCategories?.includes('IMAGE_SAFETY')) {
-        logs.push('Image was blocked due to safety concerns');
-        setError('The image generation was blocked due to safety concerns. Please try a different prompt.');
-        setDebugInfo([...logs]);
-        return;
-      }
-      
-      // Find the image part in the response
-      const imagePart = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
-      
-      if (imagePart && imagePart.inlineData) {
-        logs.push('Successfully extracted image data');
-        setImage(imagePart);
-        logs.push(`Image MIME type: ${imagePart.inlineData.mimeType}`);
-      } else {
-        logs.push('No image data found in the response');
-        setError('Failed to generate an image. The API did not return image data.');
+      for (const word of wordList) {
+        // Create a detailed prompt combining the word and style
+        const imagePrompt = `Create a high-quality, clear image of a "${word}" in the style of ${style}. The object should be the central focus of the image, and visually styled according to the description: ${style}. Make it visually appealing and artistic.`;
         
-        // Log the actual response for debugging
-        logs.push(`API Response: ${JSON.stringify(response, null, 2)}`);
+        logs.push(`Sending prompt for word: ${word}`);
+        setDebugInfo([...logs]);
+        
+        // Generate the image content
+        const result = await model.generateContent({
+          contents: [{
+            role: 'user',
+            parts: [{ text: imagePrompt }]
+          }],
+          generationConfig: {
+            responseModalities: ['Text', 'Image']
+          }
+        });
+        
+        logs.push('Received response from Gemini API');
+        setDebugInfo([...logs]);
+        
+        const response = await result.response;
+        logs.push('Processing response');
+        
+        // Check for safety blocks
+        if (response.candidates?.[0]?.safetyAttributes?.blockedCategories?.includes('IMAGE_SAFETY')) {
+          logs.push('Image was blocked due to safety concerns');
+          setError('The image generation was blocked due to safety concerns. Please try a different prompt.');
+          setDebugInfo([...logs]);
+          continue;
+        }
+        
+        // Find the image part in the response
+        const imagePart = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
+        
+        if (imagePart && imagePart.inlineData) {
+          logs.push('Successfully extracted image data');
+          setImages(prevImages => [...prevImages, { word, image: imagePart }]);
+          logs.push(`Image MIME type: ${imagePart.inlineData.mimeType}`);
+        } else {
+          logs.push('No image data found in the response');
+          setError('Failed to generate an image. The API did not return image data.');
+          
+          // Log the actual response for debugging
+          logs.push(`API Response: ${JSON.stringify(response, null, 2)}`);
+        }
+        
+        setDebugInfo([...logs]);
       }
-      
-      setDebugInfo([...logs]);
     } catch (err: any) {
       console.error('Error generating image:', err);
       setError(`Failed to generate image: ${err.message || 'Unknown error'}`);
@@ -92,35 +98,37 @@ function GeminiImageGenerator() {
     }
   };
 
-  const saveImage = () => {
-    if (!image || !word) return;
-    
-    try {
-      // For inline data from Gemini API
-      if (image.inlineData) {
-        const { mimeType, data } = image.inlineData;
-        
-        // Convert base64 to blob
-        const byteCharacters = atob(data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
+  const saveImages = () => {
+    images.forEach(({ word, image }) => {
+      if (!image || !word) return;
+      
+      try {
+        // For inline data from Gemini API
+        if (image.inlineData) {
+          const { mimeType, data } = image.inlineData;
+          
+          // Convert base64 to blob
+          const byteCharacters = atob(data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: mimeType });
+          
+          // Get file extension from MIME type
+          const extension = mimeType.split('/')[1] || 'png';
+          
+          // Save the image
+          FileSaver.saveAs(blob, `${word}.${extension}`);
+        } else {
+          setError('No valid image data to save');
         }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: mimeType });
-        
-        // Get file extension from MIME type
-        const extension = mimeType.split('/')[1] || 'png';
-        
-        // Save the image
-        FileSaver.saveAs(blob, `${word}.${extension}`);
-      } else {
-        setError('No valid image data to save');
+      } catch (err: any) {
+        console.error('Error saving image:', err);
+        setError(`Failed to save image: ${err.message || 'Unknown error'}`);
       }
-    } catch (err: any) {
-      console.error('Error saving image:', err);
-      setError(`Failed to save image: ${err.message || 'Unknown error'}`);
-    }
+    });
   };
 
   return (
@@ -129,15 +137,15 @@ function GeminiImageGenerator() {
       
       <div className="space-y-4">
         <div>
-          <label htmlFor="word" className="block text-sm font-medium text-gray-700 mb-1">
-            Word to Visualize
+          <label htmlFor="words" className="block text-sm font-medium text-gray-700 mb-1">
+            Words to Visualize (comma-separated)
           </label>
           <input
             type="text"
-            id="word"
-            value={word}
-            onChange={(e) => setWord(e.target.value)}
-            placeholder="Enter a word"
+            id="words"
+            value={words}
+            onChange={(e) => setWords(e.target.value)}
+            placeholder="Enter words separated by commas"
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -158,19 +166,19 @@ function GeminiImageGenerator() {
         
         <div className="flex space-x-4">
           <button
-            onClick={generateImage}
-            disabled={loading || !word || !style}
+            onClick={generateImages}
+            disabled={loading || !words || !style}
             className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:bg-blue-300 disabled:cursor-not-allowed"
           >
-            {loading ? 'Generating...' : 'Generate Image'}
+            {loading ? 'Generating...' : 'Generate Images'}
           </button>
           
           <button
-            onClick={saveImage}
-            disabled={!image}
+            onClick={saveImages}
+            disabled={images.length === 0}
             className="flex-1 bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 disabled:bg-green-300 disabled:cursor-not-allowed"
           >
-            Save Image
+            Save Images
           </button>
         </div>
       </div>
@@ -181,15 +189,20 @@ function GeminiImageGenerator() {
         </div>
       )}
       
-      {image && image.inlineData && (
+      {images.length > 0 && (
         <div className="mt-6">
-          <h3 className="text-lg font-medium text-gray-800 mb-2">Generated Image:</h3>
-          <div className="w-full h-auto bg-gray-100 rounded-md overflow-hidden shadow">
-            <img
-              src={`data:${image.inlineData.mimeType};base64,${image.inlineData.data}`}
-              alt={`AI generated image of ${word}`}
-              className="w-full h-auto object-contain"
-            />
+          <h3 className="text-lg font-medium text-gray-800 mb-2">Generated Images:</h3>
+          <div className="grid grid-cols-1 gap-4">
+            {images.map(({ word, image }, index) => (
+              <div key={index} className="w-full h-auto bg-gray-100 rounded-md overflow-hidden shadow">
+                <img
+                  src={`data:${image.inlineData.mimeType};base64,${image.inlineData.data}`}
+                  alt={`AI generated image of ${word}`}
+                  className="w-full h-auto object-contain"
+                />
+                <p className="text-center mt-2">{word}</p>
+              </div>
+            ))}
           </div>
         </div>
       )}
